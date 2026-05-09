@@ -4,6 +4,7 @@ import math
 
 import torch
 from torch import Tensor
+from einops import rearrange, einsum
 
 
 def linear(weights: Tensor, in_features: Tensor) -> Tensor:
@@ -13,9 +14,10 @@ def linear(weights: Tensor, in_features: Tensor) -> Tensor:
     PyTorch stores linear weights as `(output_dim, input_dim)`, so the forward
     pass multiplies by `weights.T`.
     """
-    # Reference code to type:
-    # return in_features @ weights.transpose(-1, -2)
-    return in_features @ weights.transpose(-1, -2)
+    # einops self‑documents the contraction: the input feature dimension `d_in`
+    # is matched with the second axis of `weights`, and the output dimension
+    # `d_out` appears in the result.
+    return einsum(weights, in_features, "d_out d_in, ... d_in -> ... d_out")
 
 
 def embedding(weights: Tensor, token_ids: Tensor) -> Tensor:
@@ -25,15 +27,11 @@ def embedding(weights: Tensor, token_ids: Tensor) -> Tensor:
     Tensor indexing handles any leading shape in `token_ids`. For example, a
     `(batch, sequence)` ID tensor returns `(batch, sequence, d_model)`.
     """
-    # Reference code to type:
-    # return weights[token_ids]
     return weights[token_ids]
 
 
 def silu(in_features: Tensor) -> Tensor:
     """SiLU activation: x * sigmoid(x)."""
-    # Reference code to type:
-    # return in_features * torch.sigmoid(in_features)
     return in_features * torch.sigmoid(in_features)
 
 
@@ -45,10 +43,6 @@ def swiglu(w1_weight: Tensor, w2_weight: Tensor, w3_weight: Tensor, in_features:
     goes through SiLU and gates the other side by elementwise multiplication.
     The final projection maps back to `d_model`.
     """
-    # Reference code to type:
-    # gate = silu(linear(w1_weight, in_features))
-    # value = linear(w3_weight, in_features)
-    # return linear(w2_weight, gate * value)
     gate = silu(linear(w1_weight, in_features))
     value = linear(w3_weight, in_features)
     return linear(w2_weight, gate * value)
@@ -61,10 +55,6 @@ def rmsnorm(weights: Tensor, in_features: Tensor, eps: float = 1e-5) -> Tensor:
     RMSNorm normalizes by the RMS of the last dimension only. The learned
     `weights` then scale each feature.
     """
-    # Reference code to type:
-    # rms = torch.sqrt(torch.mean(in_features.float() ** 2, dim=-1, keepdim=True) + eps)
-    # normalized = in_features / rms
-    # return normalized.to(in_features.dtype) * weights
     rms = torch.sqrt(torch.mean(in_features.float() ** 2, dim=-1, keepdim=True) + eps)
     normalized = in_features / rms
     return normalized.to(in_features.dtype) * weights
@@ -85,32 +75,31 @@ def scaled_dot_product_attention(
     - V: `(..., keys, d_v)`
     """
     d_k = Q.shape[-1]
-    scores = Q @ K.transpose(-2, -1)
-    scores = scores / math.sqrt(d_k)
+
+    # Compute attention logits with einops: per query, per key dot product.
+    scores = einsum(Q, K, "... q d, ... k d -> ... q k") / math.sqrt(d_k)
 
     if mask is not None:
-        # In these tests, True means "this key is visible" and False means
-        # "hide this key". A very negative score becomes nearly zero after
-        # softmax.
+        # True means "this key is visible", so we set False positions to -inf.
         scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
 
     attention_weights = torch.softmax(scores, dim=-1)
-    return attention_weights @ V
+
+    # Weighted sum of values, again with einops for clarity.
+    return einsum(attention_weights, V, "... q k, ... k d -> ... q d")
 
 
 def _split_heads(x: Tensor, num_heads: int) -> Tensor:
     """Convert `(..., seq, d_model)` into `(..., heads, seq, d_head)`."""
-    *leading_dims, sequence_length, d_model = x.shape
-    d_head = d_model // num_heads
-    x = x.view(*leading_dims, sequence_length, num_heads, d_head)
-    return x.transpose(-3, -2)
+    # rearrange splits the last dimension into heads × d_head and moves heads
+    # before the sequence axis – all in one self‑documenting line.
+    return rearrange(x, "... seq (h d) -> ... h seq d", h=num_heads)
 
 
 def _combine_heads(x: Tensor) -> Tensor:
     """Convert `(..., heads, seq, d_head)` back into `(..., seq, d_model)`."""
-    *leading_dims, num_heads, sequence_length, d_head = x.shape
-    x = x.transpose(-3, -2).contiguous()
-    return x.view(*leading_dims, sequence_length, num_heads * d_head)
+    # Reverse of _split_heads: merge the head dimension back into the feature dimension.
+    return rearrange(x, "... h seq d -> ... seq (h d)")
 
 
 def _causal_mask(sequence_length: int, device: torch.device) -> Tensor:
@@ -168,8 +157,6 @@ def rope(
     positions = token_positions.to(device=device, dtype=torch.float32)
     angles = positions[..., None] * inv_freq
 
-    # If the input has a head dimension, insert a singleton axis so the same
-    # positions can broadcast across all heads.
     while angles.ndim < in_query_or_key.ndim:
         angles = angles.unsqueeze(-3)
 

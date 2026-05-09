@@ -103,14 +103,6 @@ def get_lr_cosine_schedule(
     2. Cosine: smoothly decay from max LR to min LR.
     3. After the cosine window: stay at min LR.
     """
-    # Reference code to type:
-    # if it < warmup_iters:
-    #     return it / warmup_iters * max_learning_rate
-    # if it > cosine_cycle_iters:
-    #     return min_learning_rate
-    # progress = (it - warmup_iters) / (cosine_cycle_iters - warmup_iters)
-    # cosine = 0.5 * (1 + math.cos(math.pi * progress))
-    # return min_learning_rate + cosine * (max_learning_rate - min_learning_rate)
     if it < warmup_iters:
         return it / warmup_iters * max_learning_rate
 

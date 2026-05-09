@@ -14,10 +14,6 @@ def softmax(in_features: Tensor, dim: int) -> Tensor:
     Subtracting the maximum value first does not change the final probabilities,
     but it prevents very large exponentials from overflowing.
     """
-    # Reference code to type:
-    # shifted = in_features - torch.max(in_features, dim=dim, keepdim=True).values
-    # exp_values = torch.exp(shifted)
-    # return exp_values / torch.sum(exp_values, dim=dim, keepdim=True)
     shifted = in_features - torch.max(in_features, dim=dim, keepdim=True).values
     exp_values = torch.exp(shifted)
     return exp_values / torch.sum(exp_values, dim=dim, keepdim=True)
@@ -31,11 +27,6 @@ def cross_entropy(inputs: Tensor, targets: Tensor) -> Tensor:
     `targets` has shape `(batch_size,)` and stores the correct class index for
     each row.
     """
-    # Reference code to type:
-    # shifted = inputs - torch.max(inputs, dim=-1, keepdim=True).values
-    # log_sum_exp = torch.log(torch.sum(torch.exp(shifted), dim=-1))
-    # target_logits = shifted[torch.arange(targets.shape[0], device=targets.device), targets]
-    # return torch.mean(log_sum_exp - target_logits)
     shifted = inputs - torch.max(inputs, dim=-1, keepdim=True).values
     log_sum_exp = torch.log(torch.sum(torch.exp(shifted), dim=-1))
     row_indices = torch.arange(targets.shape[0], device=targets.device)

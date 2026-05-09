@@ -8,12 +8,15 @@ from pathlib import Path
 from cs336_basics.BPE import _gpt2_bytes_to_unicode, train_bpe
 
 
+# These defaults match the TinyStories BPE test fixture. The script is meant to
+# be runnable from the repository root with no extra downloads.
 DEFAULT_INPUT_PATH = Path("tests/fixtures/tinystories_sample_5M.txt")
 DEFAULT_OUTPUT_DIR = Path("outputs/tinystories_bpe")
 DEFAULT_SPECIAL_TOKENS = ["<|endoftext|>"]
 
 
 def _bytes_to_gpt2_text(token_bytes: bytes) -> str:
+    """Convert raw token bytes into GPT-2's printable vocab/merge format."""
     byte_encoder = _gpt2_bytes_to_unicode()
     return "".join(byte_encoder[byte] for byte in token_bytes)
 
@@ -23,11 +26,14 @@ def save_tokenizer(
     merges: list[tuple[bytes, bytes]],
     output_dir: Path,
 ) -> tuple[Path, Path]:
+    """Save trained BPE data in the same file shape as the GPT-2 fixtures."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     vocab_path = output_dir / "vocab.json"
     merges_path = output_dir / "merges.txt"
 
+    # `train_bpe` stores vocab as id -> bytes. GPT-2-style vocab files store
+    # printable token text -> id, so we flip and display-encode it here.
     gpt2_vocab = {
         _bytes_to_gpt2_text(token_bytes): token_id
         for token_id, token_bytes in vocab.items()
@@ -38,6 +44,8 @@ def save_tokenizer(
 
     with open(merges_path, "w", encoding="utf-8") as merges_file:
         for left, right in merges:
+            # One merge per line, in training order. Encoding later applies
+            # earlier lines first because they have lower merge ranks.
             merges_file.write(f"{_bytes_to_gpt2_text(left)} {_bytes_to_gpt2_text(right)}\n")
 
     return vocab_path, merges_path

@@ -125,6 +125,50 @@ You can change the vocabulary size or output directory:
 uv run python -m cs336_basics.train_bpe_tinystories --vocab-size 10000 --output-dir outputs/tinystories_bpe_10k
 ```
 
+The script above is a small wrapper around this Python code:
+
+```python
+from pathlib import Path
+
+from cs336_basics.BPE import Tokenizer, train_bpe
+from cs336_basics.train_bpe_tinystories import save_tokenizer
+
+input_path = Path("tests/fixtures/tinystories_sample_5M.txt")
+output_dir = Path("outputs/tinystories_bpe")
+special_tokens = ["<|endoftext|>"]
+
+vocab, merges = train_bpe(
+    input_path=input_path,
+    vocab_size=1000,
+    special_tokens=special_tokens,
+)
+
+vocab_path, merges_path = save_tokenizer(vocab, merges, output_dir)
+
+tokenizer = Tokenizer.from_files(
+    vocab_filepath=vocab_path,
+    merges_filepath=merges_path,
+    special_tokens=special_tokens,
+)
+
+text = "Once upon a time<|endoftext|>"
+ids = tokenizer.encode(text)
+decoded = tokenizer.decode(ids)
+
+print(ids)
+print(decoded)
+```
+
+Offline BPE learning path:
+
+```text
+1. Read the top comments in cs336_basics/BPE.py for the full pipeline.
+2. Read train_bpe(...) to see training call _count_pretokens, _count_adjacent_pairs,
+   _choose_best_pair, and _apply_merge_to_counts.
+3. Run the TinyStories command above and inspect outputs/tinystories_bpe/merges.txt.
+4. Load vocab.json and merges.txt with Tokenizer.from_files(...) and try encode/decode.
+```
+
 Run only model tests:
 
 ```bash

@@ -22,12 +22,6 @@ def get_batch(
 
         dataset[i + 1 : i + context_length + 1]
     """
-    # Reference code to type:
-    # max_start = len(dataset) - context_length
-    # starts = torch.randint(0, max_start, (batch_size,))
-    # x = torch.stack([torch.as_tensor(dataset[i : i + context_length]) for i in starts])
-    # y = torch.stack([torch.as_tensor(dataset[i + 1 : i + context_length + 1]) for i in starts])
-    # return x.to(device=device, dtype=torch.long), y.to(device=device, dtype=torch.long)
     max_start = len(dataset) - context_length
     if max_start <= 0:
         raise ValueError("dataset must be longer than context_length")
