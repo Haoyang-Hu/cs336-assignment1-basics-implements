@@ -9,10 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# ---------------------------------------------------------------------------
-# These imports come from your own cs336_basics package.  Each one is a
-# building block you implemented earlier in the assignment.
-# ---------------------------------------------------------------------------
+# These imports are the building blocks implemented in `cs336_basics/`.
 from cs336_basics.BPE import Tokenizer, train_bpe
 from cs336_basics.data import get_batch
 from cs336_basics.model import TransformerLMConfig, TransformerLMModule
@@ -21,32 +18,32 @@ from cs336_basics.optim import AdamW, get_lr_cosine_schedule
 from cs336_basics.serialization import load_checkpoint, save_checkpoint
 from cs336_basics.train_bpe_tinystories import save_tokenizer
 
+
 # ---------------------------------------------------------------------------
-# Default file paths.  These are used when the user doesn't override them on
-# the command line.  The script is designed to work straight out of the box
-# with the fixture data included in the repository.
+# Default Paths
 # ---------------------------------------------------------------------------
+#
+# These paths let the script run offline from the repository root. The laptop
+# preset uses the TinyStories fixture and the 1000-token BPE files already in
+# `outputs/tinystories_bpe/`.
 DEFAULT_TEXT_PATH = Path("tests/fixtures/tinystories_sample_5M.txt")
 DEFAULT_TOKENIZER_DIR = Path("outputs/tinystories_bpe")
 DEFAULT_RUN_DIR = Path("outputs/tinystories_lm_laptop")
 DEFAULT_SPECIAL_TOKENS = ["<|endoftext|>"]
 
+
 # ---------------------------------------------------------------------------
-# PRESETS
+# Presets
 # ---------------------------------------------------------------------------
+#
 # The script can run in three different modes, selected by ``--preset``.
 # Each preset is a dictionary containing values for every configurable
-# hyper‑parameter.  When you type ``--preset laptop``, the script fills in
+# hyperparameter. When you type ``--preset laptop``, the script fills in
 # any arguments you didn't explicitly provide on the command line.
 #
-# `laptop` – small model + small dataset so you can complete a full training
-#            run on an ordinary laptop in a reasonable amount of time.
-# `assignment` – uses the exact model size and token budget from the
-#                assignment handout.  Requires a strong GPU or a lot of
-#                patience.
-# `smoke` – a tiny run (2 iterations) that only checks whether the code
-#           starts without crashing.
-# ---------------------------------------------------------------------------
+# `laptop`: small model and small dataset partition for a normal laptop.
+# `assignment`: handout-sized model and token budget for stronger hardware.
+# `smoke`: two iterations, only to check that the pipeline runs.
 PRESETS = {
     "laptop": {
         "tokenizer_dir": Path("outputs/tinystories_bpe"),
@@ -154,7 +151,7 @@ def tokenizer_matches_vocab_size(vocab_path: Path, merges_path: Path, vocab_size
 
 def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
     """
-    Fill unspecified command‑line arguments from the selected preset.
+    Fill unspecified command-line arguments from the selected preset.
 
     argparse stores every optional override as `None` by default. That lets us
     distinguish "the user did not set this" from "the user intentionally set
@@ -184,7 +181,7 @@ def prepare_tokenizer(args: argparse.Namespace) -> Tokenizer:
     Load the TinyStories tokenizer, training it first if needed.
 
     The assignment model uses `vocab_size=10000`. Your earlier BPE demo may
-    have produced a smaller 1000‑token vocab, so this function checks the size
+    have produced a smaller 1000-token vocab, so this function checks the size
     before reusing files.
     """
     # Paths where the vocab and merge files are stored.
@@ -285,8 +282,8 @@ def split_train_val(
     Use the beginning for training and the end for validation.
 
     We keep at least ``context_length + 2`` tokens in both splits. This prevents
-    tiny smoke‑test splits from being too short for ``get_batch``, which needs an
-    input window plus the next‑token labels.
+    tiny smoke-test splits from being too short for ``get_batch``, which needs an
+    input window plus the next-token labels.
     """
     # The smallest split that still allows us to sample a valid batch.
     minimum_split_tokens = context_length + 2
@@ -332,7 +329,7 @@ def estimate_loss(
     device: torch.device,
 ) -> dict[str, float]:
     """Average a few random batches so the validation number is less noisy."""
-    # Switch the model to evaluation mode – this turns off dropout etc.
+    # Switch the model to evaluation mode - this turns off dropout etc.
     model.eval()
     losses: dict[str, float] = {}
 
@@ -343,7 +340,7 @@ def estimate_loss(
         for _ in range(args.eval_iters):
             x, y = get_batch(tokens, args.batch_size, args.context_length, str(device))
             logits = model(x)
-            # Cross‑entropy expects (batch*seq, vocab) and (batch*seq,).
+            # Cross-entropy expects (batch*seq, vocab) and (batch*seq,).
             loss = cross_entropy(
                 logits.reshape(-1, args.vocab_size),
                 y.reshape(-1),
@@ -371,7 +368,7 @@ def save_run_config(args: argparse.Namespace, model_config: TransformerLMConfig)
         "max_characters": args.max_characters,
     }
 
-    # Save it as a human‑readable JSON file.
+    # Save it as a human-readable JSON file.
     with open(args.run_dir / "config.json", "w", encoding="utf-8") as config_file:
         json.dump(config, config_file, indent=2)
         config_file.write("\n")
@@ -393,9 +390,9 @@ def print_run_summary(args: argparse.Namespace, device: torch.device, token_coun
 
 
 def parse_args() -> argparse.Namespace:
-    """Build the command‑line interface and apply the selected preset."""
+    """Build the command-line interface and apply the selected preset."""
     parser = argparse.ArgumentParser(
-        description="Train a laptop‑friendly Transformer LM on TinyStories."
+        description="Train a laptop-friendly Transformer LM on TinyStories."
     )
 
     # --preset: which predefined configuration to use as defaults.
@@ -404,7 +401,7 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(PRESETS),
         default="laptop",
     )
-    # --text-path: path to the raw text file (UTF‑8).
+    # --text-path: path to the raw text file (UTF-8).
     parser.add_argument("--text-path", type=Path, default=None)
     # --tokenizer-dir: where to save/load the BPE tokenizer.
     parser.add_argument("--tokenizer-dir", type=Path, default=None)
@@ -413,7 +410,7 @@ def parse_args() -> argparse.Namespace:
     # --special-token: special tokens that the tokenizer must keep intact.
     parser.add_argument("--special-token", action="append", dest="special_tokens", default=None)
 
-    # Model architecture parameters – if not given, the preset fills them in.
+    # Model architecture parameters - if not given, the preset fills them in.
     parser.add_argument("--vocab-size", type=int, default=None)
     parser.add_argument("--context-length", type=int, default=None)
     parser.add_argument("--d-model", type=int, default=None)
@@ -422,7 +419,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-ff", type=int, default=None)
     parser.add_argument("--rope-theta", type=float, default=None)
 
-    # Training hyper‑parameters – if not given, the preset fills them in.
+    # Training hyper-parameters - if not given, the preset fills them in.
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-iters", type=int, default=None)
     parser.add_argument("--max-lr", type=float, default=None)
@@ -467,7 +464,7 @@ def main() -> None:
         4. (Optionally) resume from a checkpoint.
         5. Run the training loop: sample batches, forward/backward, log, save.
     """
-    # ----- Step 1: Parse command‑line arguments and apply the preset -----
+    # ----- Step 1: Parse command-line arguments and apply the preset -----
     args = parse_args()
     device = choose_device(args.device)
     print(f"using device: {device}")
@@ -547,7 +544,7 @@ def main() -> None:
         logits = model(x)   # shape: (batch_size, context_length, vocab_size)
 
         # --- Compute loss ---
-        # Cross‑entropy compares the predicted logits against the true next tokens.
+        # Cross-entropy compares the predicted logits against the true next tokens.
         loss = cross_entropy(
             logits.reshape(-1, args.vocab_size),
             y.reshape(-1),
@@ -567,7 +564,7 @@ def main() -> None:
         optimizer.step()
 
         # --- Logging ---
-        step = iteration + 1  # human‑friendly step counter (1‑based)
+        step = iteration + 1  # human-friendly step counter (1-based)
         if step == 1 or step % args.eval_interval == 0:
             elapsed = time.time() - last_log_time
             last_log_time = time.time()

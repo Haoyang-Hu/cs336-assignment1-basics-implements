@@ -35,7 +35,7 @@ def linear(weights: Tensor, in_features: Tensor) -> Tensor:
     PyTorch stores linear weights as `(output_dim, input_dim)`, so the forward
     pass multiplies by `weights.T`.
     """
-    # einops self‑documents the contraction: the input feature dimension `d_in`
+    # einops self-documents the contraction: the input feature dimension `d_in`
     # is matched with the second axis of `weights`, and the output dimension
     # `d_out` appears in the result.
     return einsum(weights, in_features, "d_out d_in, ... d_in -> ... d_out")
@@ -112,8 +112,8 @@ def scaled_dot_product_attention(
 
 def _split_heads(x: Tensor, num_heads: int) -> Tensor:
     """Convert `(..., seq, d_model)` into `(..., heads, seq, d_head)`."""
-    # rearrange splits the last dimension into heads × d_head and moves heads
-    # before the sequence axis – all in one self‑documenting line.
+    # rearrange splits the last dimension into heads x d_head and moves heads
+    # before the sequence axis - all in one self-documenting line.
     return rearrange(x, "... seq (h d) -> ... h seq d", h=num_heads)
 
 
