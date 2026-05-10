@@ -1,3 +1,19 @@
+"""
+Adapters connect the assignment tests to the implementation in `cs336_basics`.
+
+The tests are written as small functions like `run_linear(...)` because they
+want to pass exact reference weights from fixtures. The project implementation,
+however, now uses real `torch.nn.Module` classes. `torch.func.functional_call`
+is the bridge between those worlds:
+
+1. Construct the module so its forward method and parameter names are used.
+2. Pass a temporary parameter dictionary, such as `{"weight": weights}`.
+3. Run the module without copying the fixture weights into the module object.
+
+That pattern lets the tests verify module behavior while keeping the test inputs
+explicit and easy to inspect.
+"""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +24,7 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from torch.func import functional_call
 
 
 def run_linear(
@@ -29,9 +46,12 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    from cs336_basics.model import linear
+    from cs336_basics.model import Linear
 
-    return linear(weights, in_features)
+    module = Linear(d_in, d_out, device=weights.device, dtype=weights.dtype)
+    # `functional_call` temporarily replaces `module.weight` with the exact
+    # tensor supplied by the test fixture for this one forward pass.
+    return functional_call(module, {"weight": weights}, (in_features,))
 
 
 def run_embedding(
@@ -53,9 +73,12 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    from cs336_basics.model import embedding
+    from cs336_basics.model import Embedding
 
-    return embedding(weights, token_ids)
+    module = Embedding(vocab_size, d_model, device=weights.device, dtype=weights.dtype)
+    # The embedding module owns a normal `weight` parameter, so the fixture
+    # weight can be passed under the same name.
+    return functional_call(module, {"weight": weights}, (token_ids,))
 
 
 def run_swiglu(
@@ -80,9 +103,19 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    from cs336_basics.model import swiglu
+    from cs336_basics.model import SwiGLU
 
-    return swiglu(w1_weight, w2_weight, w3_weight, in_features)
+    module = SwiGLU(d_model, d_ff, device=w1_weight.device, dtype=w1_weight.dtype)
+    # The keys here match the nested module names inside `SwiGLU`.
+    return functional_call(
+        module,
+        {
+            "w1.weight": w1_weight,
+            "w2.weight": w2_weight,
+            "w3.weight": w3_weight,
+        },
+        (in_features,),
+    )
 
 
 def run_scaled_dot_product_attention(
@@ -103,9 +136,10 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    from cs336_basics.model import scaled_dot_product_attention
+    from cs336_basics.model import ScaledDotProductAttention
 
-    return scaled_dot_product_attention(Q, K, V, mask)
+    module = ScaledDotProductAttention()
+    return module(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -139,16 +173,25 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    from cs336_basics.model import multihead_self_attention
+    from cs336_basics.model import MultiHeadSelfAttention
 
-    return multihead_self_attention(
+    module = MultiHeadSelfAttention(
         d_model=d_model,
         num_heads=num_heads,
-        q_proj_weight=q_proj_weight,
-        k_proj_weight=k_proj_weight,
-        v_proj_weight=v_proj_weight,
-        o_proj_weight=o_proj_weight,
-        in_features=in_features,
+        device=q_proj_weight.device,
+        dtype=q_proj_weight.dtype,
+    )
+    # Each projection is a `Linear` submodule, so its parameter is addressed as
+    # `<submodule_name>.weight`.
+    return functional_call(
+        module,
+        {
+            "q_proj.weight": q_proj_weight,
+            "k_proj.weight": k_proj_weight,
+            "v_proj.weight": v_proj_weight,
+            "output_proj.weight": o_proj_weight,
+        },
+        (in_features,),
     )
 
 
@@ -189,19 +232,27 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    from cs336_basics.model import multihead_self_attention_with_rope
+    from cs336_basics.model import MultiHeadSelfAttentionWithRoPE
 
-    return multihead_self_attention_with_rope(
+    module = MultiHeadSelfAttentionWithRoPE(
         d_model=d_model,
         num_heads=num_heads,
         max_seq_len=max_seq_len,
         theta=theta,
-        q_proj_weight=q_proj_weight,
-        k_proj_weight=k_proj_weight,
-        v_proj_weight=v_proj_weight,
-        o_proj_weight=o_proj_weight,
-        in_features=in_features,
-        token_positions=token_positions,
+        device=q_proj_weight.device,
+        dtype=q_proj_weight.dtype,
+    )
+    # RoPE has no trainable parameters, so only the projection weights need to
+    # be supplied here.
+    return functional_call(
+        module,
+        {
+            "q_proj.weight": q_proj_weight,
+            "k_proj.weight": k_proj_weight,
+            "v_proj.weight": v_proj_weight,
+            "output_proj.weight": o_proj_weight,
+        },
+        (in_features, token_positions),
     )
 
 
@@ -224,9 +275,10 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    from cs336_basics.model import rope
+    from cs336_basics.model import RoPE
 
-    return rope(d_k, theta, max_seq_len, in_query_or_key, token_positions)
+    module = RoPE(theta=theta, d_k=d_k, max_seq_len=max_seq_len, device=in_query_or_key.device)
+    return module(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -299,17 +351,20 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    from cs336_basics.model import transformer_block
+    from cs336_basics.model import TransformerBlock
 
-    return transformer_block(
+    module = TransformerBlock(
         d_model=d_model,
         num_heads=num_heads,
         d_ff=d_ff,
         max_seq_len=max_seq_len,
         theta=theta,
-        weights=weights,
-        in_features=in_features,
+        device=in_features.device,
+        dtype=in_features.dtype,
     )
+    # `weights` already uses the block-local names expected by
+    # `TransformerBlock`, for example `ln1.weight` and `attn.q_proj.weight`.
+    return functional_call(module, weights, (in_features,))
 
 
 def run_transformer_lm(
@@ -391,9 +446,9 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    from cs336_basics.model import transformer_lm
+    from cs336_basics.model import TransformerLM
 
-    return transformer_lm(
+    module = TransformerLM(
         vocab_size=vocab_size,
         context_length=context_length,
         d_model=d_model,
@@ -401,9 +456,12 @@ def run_transformer_lm(
         num_heads=num_heads,
         d_ff=d_ff,
         rope_theta=rope_theta,
-        weights=weights,
-        in_indices=in_indices,
+        device=in_indices.device,
+        dtype=weights["token_embeddings.weight"].dtype,
     )
+    # The full LM state dict uses assignment-style names such as
+    # `layers.0.ffn.w1.weight`, which match the nested modules exactly.
+    return functional_call(module, weights, (in_indices,))
 
 
 def run_rmsnorm(
@@ -426,9 +484,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    from cs336_basics.model import rmsnorm
+    from cs336_basics.model import RMSNorm
 
-    return rmsnorm(weights, in_features, eps)
+    module = RMSNorm(d_model, eps=eps, device=weights.device, dtype=weights.dtype)
+    return functional_call(module, {"weight": weights}, (in_features,))
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -442,9 +501,10 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    from cs336_basics.model import silu
+    from cs336_basics.model import SiLU
 
-    return silu(in_features)
+    module = SiLU()
+    return module(in_features)
 
 
 def run_get_batch(

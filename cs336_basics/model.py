@@ -1,3 +1,20 @@
+"""
+Transformer building blocks for CS336 assignment 1.
+
+There are two layers of API in this file:
+
+1. Capitalized classes such as `Linear`, `RMSNorm`, and `TransformerLM`.
+   These are real `torch.nn.Module` objects. They own parameters, appear in
+   `model.state_dict()`, and are the right objects to use for training.
+
+2. Lowercase functions such as `linear`, `rmsnorm`, and `transformer_lm`.
+   These are stateless helpers. They are useful for tests because the tests
+   pass in exact reference weights and ask for the output of one forward pass.
+
+Keeping both APIs in one file makes it easier to compare the mathematical
+operation with the trainable PyTorch module that wraps it.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,6 +43,400 @@ class TransformerLMConfig:
     d_ff: int = 1344
     rope_theta: float = 10000.0
     init_std: float = 0.02
+
+
+class Linear(torch.nn.Module):
+    """
+    A bias-free linear layer implemented from first principles.
+
+    PyTorch's `nn.Linear` normally stores both `weight` and `bias`. The
+    assignment asks for only the matrix multiply, so this module has one
+    parameter:
+
+        weight.shape == (out_features, in_features)
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(torch.empty(out_features, in_features, device=device, dtype=dtype))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        # The handout asks for truncated normal initialization with this
+        # Xavier-style standard deviation. Truncating at 3 standard deviations
+        # avoids rare very large initial weights.
+        std = math.sqrt(2 / (self.in_features + self.out_features))
+        torch.nn.init.trunc_normal_(self.weight, mean=0.0, std=std, a=-3 * std, b=3 * std)
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return linear(self.weight, in_features)
+
+
+class Embedding(torch.nn.Module):
+    """
+    Token embedding lookup table implemented without `torch.nn.Embedding`.
+
+    `weight[token_id]` returns the learned vector for one token. If `token_ids`
+    has shape `(batch, sequence)`, the output has shape
+    `(batch, sequence, embedding_dim)`.
+    """
+
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.weight = torch.nn.Parameter(torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        torch.nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
+
+    def forward(self, token_ids: Tensor) -> Tensor:
+        return embedding(self.weight, token_ids)
+
+
+class SiLU(torch.nn.Module):
+    """SiLU activation module."""
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return silu(in_features)
+
+
+class RMSNorm(torch.nn.Module):
+    """
+    Root-mean-square normalization with a learned gain vector.
+
+    RMSNorm rescales each token vector by the root mean square of its features,
+    then multiplies by `weight`. Unlike LayerNorm, it does not subtract the
+    feature mean.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        eps: float = 1e-5,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.eps = eps
+        self.weight = torch.nn.Parameter(torch.empty(d_model, device=device, dtype=dtype))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        torch.nn.init.ones_(self.weight)
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return rmsnorm(self.weight, in_features, self.eps)
+
+
+class SwiGLU(torch.nn.Module):
+    """
+    Position-wise feed-forward network with a SiLU gate.
+
+    The transformer applies this independently at every token position. The
+    shape path is:
+
+        (..., d_model) -> (..., d_ff) -> (..., d_model)
+
+    The gate branch and value branch both project up to `d_ff`; their
+    elementwise product is projected back down to `d_model`.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        d_ff: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(d_ff, d_model, device=device, dtype=dtype)
+        self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype)
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return swiglu(self.w1.weight, self.w2.weight, self.w3.weight, in_features)
+
+
+class ScaledDotProductAttention(torch.nn.Module):
+    """Scaled dot-product attention module."""
+
+    def forward(self, Q: Tensor, K: Tensor, V: Tensor, mask: Tensor | None = None) -> Tensor:
+        return scaled_dot_product_attention(Q, K, V, mask)
+
+
+class RoPE(torch.nn.Module):
+    """
+    Rotary positional embedding module.
+
+    RoPE does not own trainable parameters. It uses deterministic sine/cosine
+    rotations so attention can tell where a token is in the sequence.
+    """
+
+    def __init__(
+        self,
+        theta: float,
+        d_k: int,
+        max_seq_len: int,
+        device: torch.device | None = None,
+    ) -> None:
+        super().__init__()
+        self.theta = theta
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
+
+        half_dim = d_k // 2
+        feature_pair_indices = torch.arange(half_dim, device=device, dtype=torch.float32)
+        inv_freq = theta ** (-2 * feature_pair_indices / d_k)
+        positions = torch.arange(max_seq_len, device=device, dtype=torch.float32)
+        angles = positions[:, None] * inv_freq[None, :]
+        # These buffers are cached for inspection/debugging and will move with
+        # the module across devices, but they are not saved in checkpoints
+        # because the forward helper can recompute them from `theta` and `d_k`.
+        self.register_buffer("cos", torch.cos(angles), persistent=False)
+        self.register_buffer("sin", torch.sin(angles), persistent=False)
+
+    def forward(self, in_query_or_key: Tensor, token_positions: Tensor) -> Tensor:
+        return rope(self.d_k, self.theta, self.max_seq_len, in_query_or_key, token_positions)
+
+
+RotaryPositionalEmbedding = RoPE
+
+
+class MultiHeadSelfAttention(torch.nn.Module):
+    """
+    Multi-head causal self-attention without positional rotation.
+
+    The four linear projections are stored as modules so their parameter names
+    match the assignment state dict:
+
+        q_proj.weight, k_proj.weight, v_proj.weight, output_proj.weight
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return multihead_self_attention(
+            d_model=self.d_model,
+            num_heads=self.num_heads,
+            q_proj_weight=self.q_proj.weight,
+            k_proj_weight=self.k_proj.weight,
+            v_proj_weight=self.v_proj.weight,
+            o_proj_weight=self.output_proj.weight,
+            in_features=in_features,
+        )
+
+
+class MultiHeadSelfAttentionWithRoPE(MultiHeadSelfAttention):
+    """Multi-head causal self-attention with RoPE applied to Q and K."""
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        max_seq_len: int,
+        theta: float,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__(d_model, num_heads, device=device, dtype=dtype)
+        d_head = d_model // num_heads
+        if d_head % 2 != 0:
+            raise ValueError("RoPE needs an even head dimension")
+        self.max_seq_len = max_seq_len
+        self.theta = theta
+        self.rope = RoPE(theta=theta, d_k=d_head, max_seq_len=max_seq_len, device=device)
+
+    def forward(self, in_features: Tensor, token_positions: Tensor | None = None) -> Tensor:
+        return multihead_self_attention_with_rope(
+            d_model=self.d_model,
+            num_heads=self.num_heads,
+            max_seq_len=self.max_seq_len,
+            theta=self.theta,
+            q_proj_weight=self.q_proj.weight,
+            k_proj_weight=self.k_proj.weight,
+            v_proj_weight=self.v_proj.weight,
+            o_proj_weight=self.output_proj.weight,
+            in_features=in_features,
+            token_positions=token_positions,
+        )
+
+
+class TransformerBlock(torch.nn.Module):
+    """
+    One pre-norm Transformer block.
+
+    "Pre-norm" means the input is normalized before each sublayer. The residual
+    connections then add the sublayer output back to the stream:
+
+        x = x + attention(rmsnorm(x))
+        x = x + feed_forward(rmsnorm(x))
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int,
+        theta: float,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.max_seq_len = max_seq_len
+        self.theta = theta
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.attn = MultiHeadSelfAttentionWithRoPE(
+            d_model=d_model,
+            num_heads=num_heads,
+            max_seq_len=max_seq_len,
+            theta=theta,
+            device=device,
+            dtype=dtype,
+        )
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
+
+    def forward(self, in_features: Tensor) -> Tensor:
+        return transformer_block(
+            d_model=self.d_model,
+            num_heads=self.num_heads,
+            d_ff=self.d_ff,
+            max_seq_len=self.max_seq_len,
+            theta=self.theta,
+            weights=dict(self.named_parameters()),
+            in_features=in_features,
+        )
+
+
+class TransformerLM(torch.nn.Module):
+    """
+    Decoder-only Transformer language model.
+
+    The model turns token IDs into logits:
+
+        token IDs -> token embeddings -> transformer blocks -> final logits
+
+    Logits are unnormalized scores over the vocabulary. Training code passes
+    them to cross-entropy, which applies the probability normalization.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        rope_theta: float,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.d_model = d_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rope_theta = rope_theta
+
+        self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
+        self.layers = torch.nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    d_ff=d_ff,
+                    max_seq_len=context_length,
+                    theta=rope_theta,
+                    device=device,
+                    dtype=dtype,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
+
+    def functional_weights(self) -> dict[str, Tensor]:
+        """
+        Return parameters using the flat names expected by `transformer_lm`.
+
+        `named_parameters()` recursively walks submodules, so nested modules
+        naturally produce names like `layers.0.attn.q_proj.weight`.
+        """
+        return dict(self.named_parameters())
+
+    def forward(self, in_indices: Tensor) -> Tensor:
+        if in_indices.shape[-1] > self.context_length:
+            raise ValueError(
+                f"sequence length {in_indices.shape[-1]} exceeds context length {self.context_length}"
+            )
+
+        return transformer_lm(
+            vocab_size=self.vocab_size,
+            context_length=self.context_length,
+            d_model=self.d_model,
+            num_layers=self.num_layers,
+            num_heads=self.num_heads,
+            d_ff=self.d_ff,
+            rope_theta=self.rope_theta,
+            weights=self.functional_weights(),
+            in_indices=in_indices,
+        )
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        # Older checkpoints from the previous implementation stored parameters
+        # in a `ParameterDict` whose keys could not contain dots, so dots were
+        # replaced by double underscores. This small conversion keeps those
+        # checkpoints loadable after switching to real nested modules.
+        converted_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("params."):
+                converted_key = key.removeprefix("params.").replace("__", ".")
+            else:
+                converted_key = key
+            converted_state_dict[converted_key] = value
+        return super().load_state_dict(converted_state_dict, strict=strict, assign=assign)
 
 
 def linear(weights: Tensor, in_features: Tensor) -> Tensor:
@@ -76,9 +487,13 @@ def rmsnorm(weights: Tensor, in_features: Tensor, eps: float = 1e-5) -> Tensor:
     RMSNorm normalizes by the RMS of the last dimension only. The learned
     `weights` then scale each feature.
     """
-    rms = torch.sqrt(torch.mean(in_features.float() ** 2, dim=-1, keepdim=True) + eps)
-    normalized = in_features / rms
-    return normalized.to(in_features.dtype) * weights
+    # Compute the normalization in float32 for stability, then cast back to the
+    # original dtype so mixed-precision callers keep the expected output dtype.
+    in_dtype = in_features.dtype
+    in_features_float = in_features.to(torch.float32)
+    rms = torch.sqrt(torch.mean(in_features_float**2, dim=-1, keepdim=True) + eps)
+    normalized = in_features_float / rms
+    return (normalized * weights.to(torch.float32)).to(in_dtype)
 
 
 def scaled_dot_product_attention(
@@ -141,7 +556,17 @@ def multihead_self_attention(
     o_proj_weight: Tensor,
     in_features: Tensor,
 ) -> Tensor:
-    """Multi-head causal self-attention without RoPE."""
+    """
+    Multi-head causal self-attention without RoPE.
+
+    Starting shape:
+
+        in_features: (..., sequence_length, d_model)
+
+    After projection and splitting:
+
+        q/k/v: (..., num_heads, sequence_length, d_head)
+    """
     q = _split_heads(linear(q_proj_weight, in_features), num_heads)
     k = _split_heads(linear(k_proj_weight, in_features), num_heads)
     v = _split_heads(linear(v_proj_weight, in_features), num_heads)
@@ -178,6 +603,9 @@ def rope(
     positions = token_positions.to(device=device, dtype=torch.float32)
     angles = positions[..., None] * inv_freq
 
+    # `token_positions` can be `(seq,)` or `(batch, seq)`, while q/k may also
+    # include a head dimension. Unsqueezing at `-3` inserts singleton axes before
+    # the sequence dimension until broadcasting lines up.
     while angles.ndim < in_query_or_key.ndim:
         angles = angles.unsqueeze(-3)
 
@@ -187,6 +615,8 @@ def rope(
     x_even = in_query_or_key[..., 0::2]
     x_odd = in_query_or_key[..., 1::2]
 
+    # Each adjacent pair `(x_even, x_odd)` is treated like a 2D vector and
+    # rotated by the angle for that token position.
     rotated = torch.empty_like(in_query_or_key)
     rotated[..., 0::2] = x_even * cos - x_odd * sin
     rotated[..., 1::2] = x_even * sin + x_odd * cos
@@ -215,6 +645,8 @@ def multihead_self_attention_with_rope(
         token_positions = torch.arange(sequence_length, device=in_features.device)
 
     d_head = d_model // num_heads
+    # RoPE is applied to queries and keys only. Values are not rotated because
+    # values carry content that attention weights will mix after scoring.
     q = rope(d_head, theta, max_seq_len, q, token_positions)
     k = rope(d_head, theta, max_seq_len, k, token_positions)
 
@@ -240,6 +672,9 @@ def transformer_block(
     is added back to the residual stream.
     """
     del d_ff
+    # The weights dictionary is intentionally flat because the assignment tests
+    # pass reference weights by name. Each module has matching parameter names,
+    # and the functional path uses those same names here.
     normed = rmsnorm(weights["ln1.weight"], in_features)
     attention_output = multihead_self_attention_with_rope(
         d_model=d_model,
@@ -275,12 +710,20 @@ def transformer_lm(
     weights: dict[str, Tensor],
     in_indices: Tensor,
 ) -> Tensor:
-    """Transformer language model forward pass using the provided weights."""
+    """
+    Transformer language model forward pass using the provided weights.
+
+    This is the stateless version of `TransformerLM.forward`. It exists so the
+    tests can inject exact reference weights without constructing an optimizer
+    or mutating a module.
+    """
     del context_length
     x = embedding(weights["token_embeddings.weight"], in_indices)
 
     for layer_index in range(num_layers):
         prefix = f"layers.{layer_index}."
+        # Pull out only the parameters for this block and remove the
+        # `layers.N.` prefix, giving keys like `ln1.weight`.
         block_weights = {
             key.removeprefix(prefix): value
             for key, value in weights.items()
@@ -300,99 +743,29 @@ def transformer_lm(
     return linear(weights["lm_head.weight"], x)
 
 
-class TransformerLMModule(torch.nn.Module):
-    """
-    Trainable wrapper around the functional `transformer_lm` above.
-
-    The assignment tests use plain functions that receive a `weights` dict.
-    Training needs a `torch.nn.Module` so PyTorch can find parameters,
-    calculate gradients, and save/load checkpoints. This class bridges those
-    two worlds: it owns `nn.Parameter`s, then rebuilds the same flat `weights`
-    dictionary expected by `transformer_lm` during each forward pass.
-    """
+class TransformerLMModule(TransformerLM):
+    """Config-based alias used by the training and generation scripts."""
 
     def __init__(self, config: TransformerLMConfig) -> None:
-        super().__init__()
+        super().__init__(
+            vocab_size=config.vocab_size,
+            context_length=config.context_length,
+            d_model=config.d_model,
+            num_layers=config.num_layers,
+            num_heads=config.num_heads,
+            d_ff=config.d_ff,
+            rope_theta=config.rope_theta,
+        )
         self.config = config
 
-        if config.d_model % config.num_heads != 0:
-            raise ValueError("d_model must be divisible by num_heads")
-        if (config.d_model // config.num_heads) % 2 != 0:
-            raise ValueError("RoPE needs an even head dimension")
 
-        self._name_to_safe_name: dict[str, str] = {}
-        params: dict[str, torch.nn.Parameter] = {}
-
-        def add_parameter(name: str, shape: tuple[int, ...]) -> None:
-            # PyTorch module parameter names cannot contain dots, but the
-            # functional model expects names like `layers.0.ln1.weight`.
-            # We store a safe version internally and keep a map back to the
-            # assignment-style name.
-            safe_name = name.replace(".", "__")
-            self._name_to_safe_name[name] = safe_name
-            params[safe_name] = torch.nn.Parameter(torch.empty(shape))
-
-        add_parameter("token_embeddings.weight", (config.vocab_size, config.d_model))
-
-        for layer_index in range(config.num_layers):
-            prefix = f"layers.{layer_index}."
-            add_parameter(prefix + "ln1.weight", (config.d_model,))
-            add_parameter(prefix + "attn.q_proj.weight", (config.d_model, config.d_model))
-            add_parameter(prefix + "attn.k_proj.weight", (config.d_model, config.d_model))
-            add_parameter(prefix + "attn.v_proj.weight", (config.d_model, config.d_model))
-            add_parameter(prefix + "attn.output_proj.weight", (config.d_model, config.d_model))
-            add_parameter(prefix + "ln2.weight", (config.d_model,))
-            add_parameter(prefix + "ffn.w1.weight", (config.d_ff, config.d_model))
-            add_parameter(prefix + "ffn.w2.weight", (config.d_model, config.d_ff))
-            add_parameter(prefix + "ffn.w3.weight", (config.d_ff, config.d_model))
-
-        add_parameter("ln_final.weight", (config.d_model,))
-        add_parameter("lm_head.weight", (config.vocab_size, config.d_model))
-
-        self.params = torch.nn.ParameterDict(params)
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        """
-        Initialize model parameters before training.
-
-        Linear/embedding weights start as small random numbers. RMSNorm scale
-        weights start at 1 so the normalization layer initially leaves feature
-        magnitudes unchanged.
-        """
-        for name, parameter in self.functional_weights().items():
-            if "ln" in name and name.endswith(".weight"):
-                torch.nn.init.ones_(parameter)
-            else:
-                torch.nn.init.normal_(parameter, mean=0.0, std=self.config.init_std)
-
-    def functional_weights(self) -> dict[str, Tensor]:
-        """Return parameters using the flat names expected by `transformer_lm`."""
-        return {
-            name: self.params[safe_name]
-            for name, safe_name in self._name_to_safe_name.items()
-        }
-
-    def forward(self, in_indices: Tensor) -> Tensor:
-        """
-        Run the language model.
-
-        `in_indices` has shape `(batch, sequence)`. The returned logits have
-        shape `(batch, sequence, vocab_size)`.
-        """
-        if in_indices.shape[-1] > self.config.context_length:
-            raise ValueError(
-                f"sequence length {in_indices.shape[-1]} exceeds context length {self.config.context_length}"
-            )
-
-        return transformer_lm(
-            vocab_size=self.config.vocab_size,
-            context_length=self.config.context_length,
-            d_model=self.config.d_model,
-            num_layers=self.config.num_layers,
-            num_heads=self.config.num_heads,
-            d_ff=self.config.d_ff,
-            rope_theta=self.config.rope_theta,
-            weights=self.functional_weights(),
-            in_indices=in_indices,
-        )
+LinearModule = Linear
+EmbeddingModule = Embedding
+SiLUModule = SiLU
+RMSNormModule = RMSNorm
+SwiGLUModule = SwiGLU
+ScaledDotProductAttentionModule = ScaledDotProductAttention
+RoPEModule = RoPE
+MultiHeadSelfAttentionModule = MultiHeadSelfAttention
+MultiHeadSelfAttentionWithRoPEModule = MultiHeadSelfAttentionWithRoPE
+TransformerBlockModule = TransformerBlock

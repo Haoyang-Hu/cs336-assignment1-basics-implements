@@ -2,6 +2,32 @@
 
 This file explains where each assignment component lives.
 
+## Beginner Reading Path
+
+If you are new to the project, read it in this order:
+
+1. `tests/adapters.py`: start here to see the exact functions the tests call.
+   The adapters show the public interface expected by the assignment.
+2. `cs336_basics/model.py`: read the top module comment, then compare a
+   capitalized module class such as `Linear` with its lowercase helper
+   function `linear`.
+3. `cs336_basics/nn_utils.py`: the math is small and direct, so it is a good
+   place to practice reading tensor code.
+4. `cs336_basics/BPE.py`: read the overview comment first, then follow
+   `train_bpe(...)` and `Tokenizer.encode(...)`.
+5. `train_tinystories.py`: read this last. It combines tokenizer loading,
+   batching, the model, optimizer, loss, and checkpointing into one training
+   loop.
+
+Useful mental model:
+
+- Files in `cs336_basics/` are the implementation.
+- Files in `tests/` describe the expected behavior.
+- Adapter functions translate from the test API to the implementation API.
+- Capitalized model classes are trainable `torch.nn.Module`s.
+- Lowercase model functions are stateless math helpers used by tests and
+  modules.
+
 ## Main Files
 
 ### `cs336_basics/BPE.py`
@@ -25,6 +51,17 @@ Transformer and neural-network model code.
 Contains:
 
 - `TransformerLMConfig`
+- `Linear`
+- `Embedding`
+- `SiLU`
+- `RMSNorm`
+- `SwiGLU`
+- `ScaledDotProductAttention`
+- `RoPE` / `RotaryPositionalEmbedding`
+- `MultiHeadSelfAttention`
+- `MultiHeadSelfAttentionWithRoPE`
+- `TransformerBlock`
+- `TransformerLM`
 - `TransformerLMModule`
 - `linear`
 - `embedding`
@@ -40,10 +77,14 @@ Contains:
 
 The comments explain tensor shapes and why each operation happens.
 
-`TransformerLMModule` is the trainable wrapper used by
-`train_tinystories.py`. It stores `torch.nn.Parameter`s, then passes those
-parameters into the functional `transformer_lm` implementation that the tests
-already check.
+The capitalized classes are `torch.nn.Module` implementations that own
+`torch.nn.Parameter`s and expose assignment-style state-dict names. `*Module`
+aliases are also provided for the layer names where that convention is useful.
+The lowercase functions remain as small functional helpers used by the modules
+and for compatibility with older code.
+
+`TransformerLMModule` is the config-based trainable wrapper used by
+`train_tinystories.py`.
 
 ### `cs336_basics/nn_utils.py`
 
@@ -96,7 +137,9 @@ It saves model state, optimizer state, and the current iteration.
 Adapter layer used by the tests.
 
 The tests call functions in `tests/adapters.py`. Each adapter now imports the
-real implementation from `cs336_basics/`.
+real implementation from `cs336_basics/`. For module-based layers, the adapters
+use `torch.func.functional_call` so the tests can run a module with exact
+fixture weights without manually copying those weights into the module.
 
 ### `train_tinystories.py`
 

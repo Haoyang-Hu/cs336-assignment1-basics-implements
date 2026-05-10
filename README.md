@@ -36,8 +36,9 @@ This repo now includes the section-5.3-and-beyond training path:
 
 - `train_tinystories.py` trains a Transformer language model.
 - `generate_tinystories.py` loads a checkpoint and samples TinyStories-like text.
-- `cs336_basics/model.py` includes `TransformerLMModule`, a trainable wrapper
-  around the assignment-tested functional Transformer code.
+- `cs336_basics/model.py` includes `nn.Module` implementations of the model
+  components and `TransformerLMModule`, the config-based trainable LM used by
+  the scripts.
 
 The default training command is designed for a normal laptop and does not need
 internet. It uses the local file `tests/fixtures/tinystories_sample_5M.txt`, the
