@@ -24,6 +24,8 @@ Transformer and neural-network model code.
 
 Contains:
 
+- `TransformerLMConfig`
+- `TransformerLMModule`
 - `linear`
 - `embedding`
 - `silu`
@@ -37,6 +39,11 @@ Contains:
 - `transformer_lm`
 
 The comments explain tensor shapes and why each operation happens.
+
+`TransformerLMModule` is the trainable wrapper used by
+`train_tinystories.py`. It stores `torch.nn.Parameter`s, then passes those
+parameters into the functional `transformer_lm` implementation that the tests
+already check.
 
 ### `cs336_basics/nn_utils.py`
 
@@ -90,6 +97,34 @@ Adapter layer used by the tests.
 
 The tests call functions in `tests/adapters.py`. Each adapter now imports the
 real implementation from `cs336_basics/`.
+
+### `train_tinystories.py`
+
+Section-5.3-style language-model training code.
+
+Contains:
+
+- tokenizer preparation for the TinyStories BPE tokenizer
+- text-to-token caching
+- train/validation splitting
+- Transformer LM construction from laptop, smoke, or assignment presets
+- AdamW training loop
+- cosine learning-rate schedule
+- cross-entropy loss
+- gradient clipping
+- checkpoint saving and resume support
+
+### `generate_tinystories.py`
+
+Decoding script for trained TinyStories checkpoints.
+
+Contains:
+
+- checkpoint loading
+- tokenizer loading
+- autoregressive generation
+- temperature sampling
+- top-k filtering
 
 ## Test Commands
 
@@ -167,6 +202,52 @@ Offline BPE learning path:
    _choose_best_pair, and _apply_merge_to_counts.
 3. Run the TinyStories command above and inspect outputs/tinystories_bpe/merges.txt.
 4. Load vocab.json and merges.txt with Tokenizer.from_files(...) and try encode/decode.
+```
+
+Train the laptop-friendly TinyStories language model:
+
+```bash
+uv run python train_tinystories.py
+```
+
+The laptop preset is the default and is meant to be runnable without internet on
+a normal laptop:
+
+```text
+vocab_size = 1000
+context_length = 64
+d_model = 128
+num_layers = 4
+num_heads = 4
+d_ff = 512
+rope_theta = 10000.0
+batch_size = 16
+max_iters = 1500
+max_characters = 1000000
+```
+
+If it is still too slow on your machine:
+
+```bash
+uv run python train_tinystories.py --max-iters 500 --max-characters 300000
+```
+
+Run a tiny smoke test before a longer training run:
+
+```bash
+uv run python train_tinystories.py --preset smoke
+```
+
+Run the full assignment-shaped configuration only when you have enough compute:
+
+```bash
+uv run python train_tinystories.py --preset assignment
+```
+
+Generate from the trained model:
+
+```bash
+uv run python generate_tinystories.py --prompt "Once upon a time" --max-new-tokens 200
 ```
 
 Run only model tests:

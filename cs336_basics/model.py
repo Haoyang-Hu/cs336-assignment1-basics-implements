@@ -1,10 +1,31 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 import torch
 from torch import Tensor
 from einops import rearrange, einsum
+
+
+@dataclass(frozen=True)
+class TransformerLMConfig:
+    """
+    Hyperparameters for a trainable Transformer language model.
+
+    The default values match the TinyStories model size requested in the
+    assignment document: a 10k-token vocabulary, 256-token context, 4 layers,
+    512 hidden size, 16 attention heads, and a 1344-wide feed-forward network.
+    """
+
+    vocab_size: int = 10000
+    context_length: int = 256
+    d_model: int = 512
+    num_layers: int = 4
+    num_heads: int = 16
+    d_ff: int = 1344
+    rope_theta: float = 10000.0
+    init_std: float = 0.02
 
 
 def linear(weights: Tensor, in_features: Tensor) -> Tensor:
@@ -277,3 +298,101 @@ def transformer_lm(
 
     x = rmsnorm(weights["ln_final.weight"], x)
     return linear(weights["lm_head.weight"], x)
+
+
+class TransformerLMModule(torch.nn.Module):
+    """
+    Trainable wrapper around the functional `transformer_lm` above.
+
+    The assignment tests use plain functions that receive a `weights` dict.
+    Training needs a `torch.nn.Module` so PyTorch can find parameters,
+    calculate gradients, and save/load checkpoints. This class bridges those
+    two worlds: it owns `nn.Parameter`s, then rebuilds the same flat `weights`
+    dictionary expected by `transformer_lm` during each forward pass.
+    """
+
+    def __init__(self, config: TransformerLMConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        if config.d_model % config.num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+        if (config.d_model // config.num_heads) % 2 != 0:
+            raise ValueError("RoPE needs an even head dimension")
+
+        self._name_to_safe_name: dict[str, str] = {}
+        params: dict[str, torch.nn.Parameter] = {}
+
+        def add_parameter(name: str, shape: tuple[int, ...]) -> None:
+            # PyTorch module parameter names cannot contain dots, but the
+            # functional model expects names like `layers.0.ln1.weight`.
+            # We store a safe version internally and keep a map back to the
+            # assignment-style name.
+            safe_name = name.replace(".", "__")
+            self._name_to_safe_name[name] = safe_name
+            params[safe_name] = torch.nn.Parameter(torch.empty(shape))
+
+        add_parameter("token_embeddings.weight", (config.vocab_size, config.d_model))
+
+        for layer_index in range(config.num_layers):
+            prefix = f"layers.{layer_index}."
+            add_parameter(prefix + "ln1.weight", (config.d_model,))
+            add_parameter(prefix + "attn.q_proj.weight", (config.d_model, config.d_model))
+            add_parameter(prefix + "attn.k_proj.weight", (config.d_model, config.d_model))
+            add_parameter(prefix + "attn.v_proj.weight", (config.d_model, config.d_model))
+            add_parameter(prefix + "attn.output_proj.weight", (config.d_model, config.d_model))
+            add_parameter(prefix + "ln2.weight", (config.d_model,))
+            add_parameter(prefix + "ffn.w1.weight", (config.d_ff, config.d_model))
+            add_parameter(prefix + "ffn.w2.weight", (config.d_model, config.d_ff))
+            add_parameter(prefix + "ffn.w3.weight", (config.d_ff, config.d_model))
+
+        add_parameter("ln_final.weight", (config.d_model,))
+        add_parameter("lm_head.weight", (config.vocab_size, config.d_model))
+
+        self.params = torch.nn.ParameterDict(params)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """
+        Initialize model parameters before training.
+
+        Linear/embedding weights start as small random numbers. RMSNorm scale
+        weights start at 1 so the normalization layer initially leaves feature
+        magnitudes unchanged.
+        """
+        for name, parameter in self.functional_weights().items():
+            if "ln" in name and name.endswith(".weight"):
+                torch.nn.init.ones_(parameter)
+            else:
+                torch.nn.init.normal_(parameter, mean=0.0, std=self.config.init_std)
+
+    def functional_weights(self) -> dict[str, Tensor]:
+        """Return parameters using the flat names expected by `transformer_lm`."""
+        return {
+            name: self.params[safe_name]
+            for name, safe_name in self._name_to_safe_name.items()
+        }
+
+    def forward(self, in_indices: Tensor) -> Tensor:
+        """
+        Run the language model.
+
+        `in_indices` has shape `(batch, sequence)`. The returned logits have
+        shape `(batch, sequence, vocab_size)`.
+        """
+        if in_indices.shape[-1] > self.config.context_length:
+            raise ValueError(
+                f"sequence length {in_indices.shape[-1]} exceeds context length {self.config.context_length}"
+            )
+
+        return transformer_lm(
+            vocab_size=self.config.vocab_size,
+            context_length=self.config.context_length,
+            d_model=self.config.d_model,
+            num_layers=self.config.num_layers,
+            num_heads=self.config.num_heads,
+            d_ff=self.config.d_ff,
+            rope_theta=self.config.rope_theta,
+            weights=self.functional_weights(),
+            in_indices=in_indices,
+        )
